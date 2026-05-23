@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SIP Call</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jssip/3.10.1/jssip.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:Arial,Helvetica,sans-serif;background:#0a0c10;color:#e2e8f0;display:flex;align-items:center;justify-content:center;min-height:100vh}
+.card{background:#111318;border:1px solid #1e2330;border-radius:16px;padding:36px;width:360px;max-width:95vw;box-shadow:0 30px 80px rgba(0,0,0,.6)}
+.header{display:flex;align-items:center;gap:12px;margin-bottom:28px}
+.logo{width:36px;height:36px;background:linear-gradient(135deg,#0088ff,#00e5a0);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:17px;flex-shrink:0}
+.logo-txt{font-size:18px;font-weight:bold}
+.logo-txt span{color:#00e5a0}
+.pill{margin-left:auto;display:flex;align-items:center;gap:6px;font-family:monospace;font-size:10px;color:#5a6480;background:rgba(255,255,255,.04);border:1px solid #1e2330;border-radius:20px;padding:4px 10px}
+.dot{width:6px;height:6px;border-radius:50%;background:#5a6480}
+.pill-ok{color:#00e5a0;border-color:rgba(0,229,160,.3)}
+.pill-ok .dot{background:#00e5a0}
+.pill-err{color:#ff3b5c;border-color:rgba(255,59,92,.3)}
+.pill-err .dot{background:#ff3b5c}
+.pill-busy{color:#0088ff;border-color:rgba(0,136,255,.3)}
+.pill-busy .dot{background:#0088ff}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+.pill-ok .dot,.pill-busy .dot{animation:blink 1.5s infinite}
+label{display:block;font-size:10px;font-family:monospace;color:#5a6480;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:7px}
+.field{margin-bottom:18px}
+.input-wrap{position:relative}
+input{width:100%;background:rgba(255,255,255,.03);border:1px solid #1e2330;border-radius:10px;padding:12px 14px;color:#e2e8f0;font-family:monospace;font-size:15px;outline:none}
+input:focus{border-color:rgba(0,229,160,.5)}
+.state{font-family:monospace;font-size:12px;text-align:center;color:#0088ff;letter-spacing:1px;min-height:20px;margin:14px 0 6px}
+.btn-row{display:flex;gap:12px;margin-top:8px}
+.btn{flex:1;border:none;border-radius:11px;padding:13px;font-weight:bold;font-size:14px;cursor:pointer;transition:opacity .2s;background:linear-gradient(135deg,#00c87a,#00e5a0);color:#003020}
+.btn:disabled{opacity:.35;cursor:not-allowed}
+.btn-hang{background:linear-gradient(135deg,#c02040,#ff3b5c);color:#fff}
+.log{margin-top:18px;background:rgba(0,0,0,.35);border:1px solid #1e2330;border-radius:10px;padding:10px 13px;font-family:monospace;font-size:11px;color:#5a6480;min-height:34px;max-height:90px;overflow-y:auto;line-height:1.65;word-break:break-all}
+.log .ok{color:#00e5a0}
+.log .err{color:#ff3b5c}
+.log .inf{color:#0088ff}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="header">
+    <div class="logo">&#9742;</div>
+    <div class="logo-txt">SIP<span>call</span></div>
+    <div class="pill" id="pill"><div class="dot"></div><span id="pillTxt">iniciando...</span></div>
+  </div>
+  <div class="field">
+    <label>Tu numero</label>
+    <input type="text" id="fromNum" placeholder="ej. 525512345678">
+  </div>
+  <div class="field">
+    <label>Destino</label>
+    <input type="text" id="toNum" placeholder="ej. 525598765432">
+  </div>
+  <div class="state" id="callState"></div>
+  <div class="btn-row">
+    <button class="btn" id="btnCall" onclick="makeCall()" disabled>Llamar</button>
+    <button class="btn btn-hang" id="btnHang" onclick="hangup()" disabled>Colgar</button>
+  </div>
+  <div class="log" id="log"><span class="inf">&#8250; Iniciando...</span></div>
+</div>
+<script>
+var ua = null, session = null;
+var SIP_USER = 'wes5169805709', SIP_PASS = '138e587867f90ba6c5c5fb9c16b73cc3', SIP_DOMAIN = 'webdial.keepcalling.net';
+var WSS_URL = 'wss://wss-proxy-qrqz.onrender.com';
+
+function g(id) { return document.getElementById(id); }
+function log(msg, cls) { var d = document.createElement('div'); if (cls) d.className = cls; d.appendChild(document.createTextNode('\u203a ' + msg)); g('log').appendChild(d); g('log').scrollTop = g('log').scrollHeight; }
+function setStatus(txt, cls) { g('pill').className = 'pill' + (cls ? ' ' + cls : ''); g('pillTxt').textContent = txt; }
+
+function startUA() {
+  try {
+    var socket = new JsSIP.WebSocketInterface(WSS_URL);
+    ua = new JsSIP.UA({
+      sockets: [socket],
+      uri: 'sip:' + SIP_USER + '@' + SIP_DOMAIN,
+      password: SIP_PASS,
+      register: true,
+      register_expires: 300,
+      ice_servers: [{ urls: 'stun:stun.l.google.com:19302' }],
+      session_timers: false,
+      connection_recovery_min_interval: 3,
+      connection_recovery_max_interval: 30,
+    });
+
+    ua.on('registered', function() {
+      setStatus('registrado', 'pill-ok');
+      log('Registrado en ' + SIP_DOMAIN, 'ok');
+      g('btnCall').disabled = false;
+    });
+
+    ua.on('unregistered', function() {
+      setStatus('no registrado', 'pill-err');
+      log('Desregistrado', 'err');
+      g('btnCall').disabled = true;
+    });
+
+    ua.on('registrationFailed', function(e) {
+      setStatus('error registro', 'pill-err');
+      log('Fallo registro: ' + (e.cause || 'desconocido'), 'err');
+    });
+
+    ua.on('connected', function() {
+      setStatus('conectado', 'pill-ok');
+      log('WebSocket conectado', 'ok');
+    });
+
+    ua.on('disconnected', function() {
+      setStatus('desconectado', 'pill-err');
+      log('WebSocket desconectado', 'err');
+    });
+
+    ua.on('newRTCSession', function(data) {
+      var s = data.session;
+      if (s.direction === 'incoming') {
+        session = s;
+        log('Llamada entrante', 'inf');
+        session.answer({ mediaConstraints: { audio: true, video: false } });
+      }
+      s.on('failed', function(e) { log('Llamada fallo: ' + e.cause, 'err'); g('callState').textContent = ''; setStatus('registrado', 'pill-ok'); g('btnCall').disabled = false; g('btnHang').disabled = true; });
+      s.on('ended', function() { log('Llamada terminada', 'inf'); g('callState').textContent = ''; setStatus('registrado', 'pill-ok'); g('btnCall').disabled = false; g('btnHang').disabled = true; session = null; });
+      s.on('accepted', function() { log('Llamada conectada', 'ok'); setStatus('en llamada', 'pill-busy'); g('callState').textContent = 'CONECTADO'; g('btnCall').disabled = true; g('btnHang').disabled = false; });
+      s.on('confirmed', function() { log('Media establecido', 'ok'); });
+    });
+
+    ua.start();
+    log('Iniciando UA...', 'inf');
+  } catch (e) {
+    log('Error: ' + e.message, 'err');
+    setStatus('error', 'pill-err');
+  }
+}
+
+window.makeCall = function() {
+  var from = g('fromNum').value.trim();
+  var to = g('toNum').value.trim();
+  if (!to) { log('Ingresa numero destino', 'err'); return; }
+  var target = 'sip:' + to + '@' + SIP_DOMAIN;
+  try {
+    session = ua.call(target, {
+      mediaConstraints: { audio: true, video: false },
+      extraHeaders: from ? ['X-Caller-ID: ' + from] : [],
+    });
+    log('Llamando a ' + to + '...', 'inf');
+    g('callState').textContent = 'LLAMANDO...';
+    setStatus('llamando', 'pill-busy');
+    g('btnCall').disabled = true;
+    session.on('failed', function(e) { log('Fallo: ' + e.cause, 'err'); g('callState').textContent = ''; setStatus('registrado', 'pill-ok'); g('btnCall').disabled = false; g('btnHang').disabled = true; });
+    session.on('ended', function() { log('Terminada', 'inf'); g('callState').textContent = ''; setStatus('registrado', 'pill-ok'); g('btnCall').disabled = false; g('btnHang').disabled = true; session = null; });
+    session.on('accepted', function() { log('Conectada', 'ok'); setStatus('en llamada', 'pill-busy'); g('callState').textContent = 'CONECTADO'; g('btnHang').disabled = false; });
+    session.on('confirmed', function() { log('Media OK', 'ok'); });
+  } catch(e) {
+    log('Error llamada: ' + e.message, 'err');
+  }
+};
+
+window.hangup = function() {
+  if (session) { session.terminate(); log('Colgando...', 'inf'); }
+};
+
+document.addEventListener('DOMContentLoaded', startUA);
+</script>
+</body>
+</html>

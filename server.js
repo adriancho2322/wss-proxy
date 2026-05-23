@@ -1,15 +1,44 @@
 const http = require('http');
+const fs = require('fs');
+const path = require('path');
 const WebSocket = require('ws');
 const net = require('net');
 
 const PORT = process.env.PORT || 10000;
 const TARGET_HOST = 'webdial.keepcalling.net';
 const TARGET_PORT = 5060;
+const PUBLIC_DIR = path.join(__dirname, 'public');
+
+const MIME_TYPES = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'application/javascript',
+  '.css': 'text/css',
+  '.png': 'image/png',
+  '.ico': 'image/x-icon',
+};
 
 const server = http.createServer((req, res) => {
-  res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('WSS Proxy running');
+  if (req.url === '/') {
+    serveFile('index.html', res);
+  } else {
+    res.writeHead(404);
+    res.end('Not found');
+  }
 });
+
+function serveFile(name, res) {
+  const filePath = path.join(PUBLIC_DIR, name);
+  fs.readFile(filePath, (err, data) => {
+    if (err) {
+      res.writeHead(500);
+      res.end('Error loading page');
+      return;
+    }
+    const ext = path.extname(name);
+    res.writeHead(200, { 'Content-Type': MIME_TYPES[ext] || 'text/plain' });
+    res.end(data);
+  });
+}
 
 const wss = new WebSocket.Server({ server });
 
@@ -19,7 +48,7 @@ wss.on('connection', (ws) => {
   });
 
   ws.on('message', (data) => {
-    if (typeof data === 'string') {
+    if (Buffer.isBuffer(data)) {
       client.write(data);
     } else {
       client.write(data);
@@ -54,5 +83,5 @@ wss.on('connection', (ws) => {
 });
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`WSS Proxy listening on port ${PORT}`);
+  console.log(`Server listening on port ${PORT}`);
 });
