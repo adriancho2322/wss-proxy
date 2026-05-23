@@ -3,8 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>SIP Call</title>
+<title>SIP Call - Siperb</title>
 <script src="https://cdn.jsdelivr.net/npm/jssip@3.0.28/dist/jssip.min.js"></script>
+<script src="https://cdn.siperb.com/lib/Siperb-Web-Phone/Web-Phone-0.0.16.umd.min.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:Arial,Helvetica,sans-serif;background:#0a0c10;color:#e2e8f0;display:flex;align-items:center;justify-content:center;min-height:100vh}
@@ -62,39 +63,83 @@ input:focus{border-color:rgba(0,229,160,.5)}
   <div class="log" id="log"><span class="inf">&#8250; Iniciando...</span></div>
 </div>
 <script>
-var ua = null, session = null;
-var SIP_USER = 'wes5169805709', SIP_PASS = '138e587867f90ba6c5c5fb9c16b73cc3', SIP_DOMAIN = 'webdial.keepcalling.net';
-var WSS_URL = 'wss://wss-proxy-qrqz.onrender.com';
+var ua = null, prov = null, sipSession = null;
+var SIPERB_PAT = '3966041dc3254604011f728b5c503b210d6d0f4b87d36d185da31ba214f54b70d0ce8ed231ee958213a57f347c128ed701b5ab4ad9ff6ca1cd87ff0f1c68bf217db7403d6a9bdf24887b5c4b2f0a2fa38b16e5ed3644ce724c710327c489cf7cd545cd513433c40bdcfd0b04a9cf9228d00cfedc6c59226e51f4e907d872621a';
+var _sessionToken = '', _userId = '';
 
 function g(id) { return document.getElementById(id); }
 function log(msg, cls) { var d = document.createElement('div'); if (cls) d.className = cls; d.appendChild(document.createTextNode('\u203a ' + msg)); g('log').appendChild(d); g('log').scrollTop = g('log').scrollHeight; }
 function setStatus(txt, cls) { g('pill').className = 'pill' + (cls ? ' ' + cls : ''); g('pillTxt').textContent = txt; }
 
-function startUA() {
+async function init() {
   try {
-    var socket = new JsSIP.WebSocketInterface(WSS_URL);
-    ua = new JsSIP.UA({
+    log('Conectando con Siperb...', 'inf');
+    var sess = await window.Siperb.Login(SIPERB_PAT);
+    log('Sesion Siperb obtenida', 'ok');
+
+    var devices = await window.Siperb.GetDevices({
+      UserId: sess.UserId,
+      SessionToken: sess.SessionToken,
+      EnableCache: false
+    });
+
+    if (!devices || devices.length === 0) {
+      log('No hay dispositivos Script. Crea uno en Admin > Developer Settings > Embedded Script Device', 'err');
+      setStatus('error', 'pill-err');
+      return;
+    }
+
+    var device = devices[0];
+    log('Dispositivo: ' + (device.DisplayName || device.DeviceToken || 'sin nombre'), 'ok');
+
+    var provisioning = await window.Siperb.GetProvisioning({
+      UserId: sess.UserId,
+      DeviceToken: device.DeviceToken || device.Token,
+      SessionToken: sess.SessionToken,
+      EnableCache: false
+    });
+
+    if (!provisioning) {
+      log('Error al obtener provisioning', 'err');
+      setStatus('error', 'pill-err');
+      return;
+    }
+
+    prov = provisioning;
+    _sessionToken = sess.SessionToken;
+    _userId = sess.UserId;
+    log('Provisioning obtenido', 'ok');
+
+    var sipPath = prov.SipServerPath || '';
+    var wsServer = 'wss://' + prov.SipWssServer + ':' + prov.SipWebsocketPort + (sipPath ? '/' + sipPath : '');
+    log('WSS: ' + wsServer, 'inf');
+
+    var socket = new JsSIP.WebSocketInterface(wsServer);
+    var config = {
       sockets: [socket],
-      uri: 'sip:' + SIP_USER + '@' + SIP_DOMAIN,
-      password: SIP_PASS,
+      uri: 'sip:' + prov.SipUsername + '@' + prov.SipDomain,
+      password: prov.SipPassword,
       register: true,
       register_expires: 300,
-      ice_servers: [{ urls: 'stun:stun.l.google.com:19302' }],
       session_timers: false,
       connection_recovery_min_interval: 3,
       connection_recovery_max_interval: 30,
-    });
+      extra_headers: [
+        'X-Siperb-Sid: ' + _sessionToken,
+        'X-Siperb-Uid: ' + _userId
+      ]
+    };
+
+    if (prov.SipJwt) {
+      config.extra_headers.push('Authorization: Bearer ' + prov.SipJwt);
+    }
+
+    ua = new JsSIP.UA(config);
 
     ua.on('registered', function() {
       setStatus('registrado', 'pill-ok');
-      log('Registrado en ' + SIP_DOMAIN, 'ok');
+      log('Registrado en Siperb', 'ok');
       g('btnCall').disabled = false;
-    });
-
-    ua.on('unregistered', function() {
-      setStatus('no registrado', 'pill-err');
-      log('Desregistrado', 'err');
-      g('btnCall').disabled = true;
     });
 
     ua.on('registrationFailed', function(e) {
@@ -115,18 +160,18 @@ function startUA() {
     ua.on('newRTCSession', function(data) {
       var s = data.session;
       if (s.direction === 'incoming') {
-        session = s;
+        sipSession = s;
         log('Llamada entrante', 'inf');
-        session.answer({ mediaConstraints: { audio: true, video: false } });
+        s.answer({ mediaConstraints: { audio: true, video: false } });
       }
       s.on('failed', function(e) { log('Llamada fallo: ' + e.cause, 'err'); g('callState').textContent = ''; setStatus('registrado', 'pill-ok'); g('btnCall').disabled = false; g('btnHang').disabled = true; });
-      s.on('ended', function() { log('Llamada terminada', 'inf'); g('callState').textContent = ''; setStatus('registrado', 'pill-ok'); g('btnCall').disabled = false; g('btnHang').disabled = true; session = null; });
+      s.on('ended', function() { log('Llamada terminada', 'inf'); g('callState').textContent = ''; setStatus('registrado', 'pill-ok'); g('btnCall').disabled = false; g('btnHang').disabled = true; sipSession = null; });
       s.on('accepted', function() { log('Llamada conectada', 'ok'); setStatus('en llamada', 'pill-busy'); g('callState').textContent = 'CONECTADO'; g('btnCall').disabled = true; g('btnHang').disabled = false; });
       s.on('confirmed', function() { log('Media establecido', 'ok'); });
     });
 
     ua.start();
-    log('Iniciando UA...', 'inf');
+    log('Iniciando UA via Siperb...', 'inf');
   } catch (e) {
     log('Error: ' + e.message, 'err');
     setStatus('error', 'pill-err');
@@ -134,33 +179,39 @@ function startUA() {
 }
 
 window.makeCall = function() {
-  var from = g('fromNum').value.trim();
   var to = g('toNum').value.trim();
   if (!to) { log('Ingresa numero destino', 'err'); return; }
-  var target = 'sip:' + to + '@' + SIP_DOMAIN;
+  var target = 'sip:' + to + '@' + prov.SipDomain;
   try {
-    session = ua.call(target, {
+    var opts = {
       mediaConstraints: { audio: true, video: false },
-      extraHeaders: from ? ['X-Caller-ID: ' + from] : [],
-    });
+      extraHeaders: [
+        'X-Siperb-Sid: ' + _sessionToken,
+        'X-Siperb-Uid: ' + _userId
+      ]
+    };
+    if (prov.SipJwt) {
+      opts.extraHeaders.push('Authorization: Bearer ' + prov.SipJwt);
+    }
+    sipSession = ua.call(target, opts);
     log('Llamando a ' + to + '...', 'inf');
     g('callState').textContent = 'LLAMANDO...';
     setStatus('llamando', 'pill-busy');
     g('btnCall').disabled = true;
-    session.on('failed', function(e) { log('Fallo: ' + e.cause, 'err'); g('callState').textContent = ''; setStatus('registrado', 'pill-ok'); g('btnCall').disabled = false; g('btnHang').disabled = true; });
-    session.on('ended', function() { log('Terminada', 'inf'); g('callState').textContent = ''; setStatus('registrado', 'pill-ok'); g('btnCall').disabled = false; g('btnHang').disabled = true; session = null; });
-    session.on('accepted', function() { log('Conectada', 'ok'); setStatus('en llamada', 'pill-busy'); g('callState').textContent = 'CONECTADO'; g('btnHang').disabled = false; });
-    session.on('confirmed', function() { log('Media OK', 'ok'); });
+    sipSession.on('failed', function(e) { log('Fallo: ' + e.cause, 'err'); g('callState').textContent = ''; setStatus('registrado', 'pill-ok'); g('btnCall').disabled = false; g('btnHang').disabled = true; });
+    sipSession.on('ended', function() { log('Terminada', 'inf'); g('callState').textContent = ''; setStatus('registrado', 'pill-ok'); g('btnCall').disabled = false; g('btnHang').disabled = true; sipSession = null; });
+    sipSession.on('accepted', function() { log('Conectada', 'ok'); setStatus('en llamada', 'pill-busy'); g('callState').textContent = 'CONECTADO'; g('btnHang').disabled = false; });
+    sipSession.on('confirmed', function() { log('Media OK', 'ok'); });
   } catch(e) {
     log('Error llamada: ' + e.message, 'err');
   }
 };
 
 window.hangup = function() {
-  if (session) { session.terminate(); log('Colgando...', 'inf'); }
+  if (sipSession) { sipSession.terminate(); log('Colgando...', 'inf'); }
 };
 
-document.addEventListener('DOMContentLoaded', startUA);
+document.addEventListener('DOMContentLoaded', init);
 </script>
 </body>
 </html>
